@@ -5,13 +5,22 @@ import pandas as pd
 from datetime import datetime, timedelta
 import json
 
-# Authenticate using Streamlit secrets
+# Authenticate using Streamlit secrets or file upload
 def authenticate_gsc():
-    if 'gcp_credentials' not in st.secrets:
-        st.error("Google Cloud credentials not found in secrets. Please add them to secrets.toml.")
-        return None
+    # Option 1: Use secrets
+    if 'gcp_credentials' in st.secrets:
+        credentials_json = json.loads(st.secrets['gcp_credentials']['gcp_credentials_json'])
+        st.info("Using credentials from Streamlit secrets.")
+    else:
+        # Option 2: File upload
+        uploaded_file = st.file_uploader("Upload Google Cloud Credentials JSON", type="json")
+        if uploaded_file is not None:
+            credentials_json = json.load(uploaded_file)
+            st.success("Credentials file uploaded successfully.")
+        else:
+            st.warning("Please upload your Google Cloud credentials JSON file or configure secrets.")
+            return None
 
-    credentials_json = json.loads(st.secrets['gcp_credentials']['gcp_credentials_json'])
     credentials = service_account.Credentials.from_service_account_info(
         credentials_json, scopes=['https://www.googleapis.com/auth/webmasters.readonly']
     )
