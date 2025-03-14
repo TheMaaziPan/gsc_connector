@@ -3,11 +3,26 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import pandas as pd
 from datetime import datetime, timedelta
+import json
 
-# Authenticate and connect to GSC API
-def authenticate_gsc(credentials_file):
-    credentials = service_account.Credentials.from_service_account_file(
-        credentials_file, scopes=['https://www.googleapis.com/auth/webmasters.readonly']
+# Authenticate using Streamlit secrets or file upload
+def authenticate_gsc():
+    # Option 1: Use secrets
+    if 'gcp_credentials' in st.secrets:
+        credentials_json = json.loads(st.secrets['gcp_credentials']['gcp_credentials_json'])
+        st.info("Using credentials from Streamlit secrets.")
+    else:
+        # Option 2: File upload
+        uploaded_file = st.file_uploader("Upload Google Cloud Credentials JSON", type="json")
+        if uploaded_file is not None:
+            credentials_json = json.load(uploaded_file)
+            st.success("Credentials file uploaded successfully.")
+        else:
+            st.warning("Please upload your Google Cloud credentials JSON file or configure secrets.")
+            return None
+
+    credentials = service_account.Credentials.from_service_account_info(
+        credentials_json, scopes=['https://www.googleapis.com/auth/webmasters.readonly']
     )
     service = build('searchconsole', 'v1', credentials=credentials)
     return service
@@ -38,58 +53,59 @@ def fetch_gsc_data(service, site_url, start_date, end_date, dimensions=['query',
 def main():
     st.title("Google Search Console Data Extractor")
 
-    # Authentication
-    credentials_file = st.file_uploader("Upload Google Cloud Credentials JSON", type="json")
-    if credentials_file:
-        service = authenticate_gsc(credentials_file)
-        site_url = st.text_input("Enter your site URL (e.g., https://example.com):")
+    # Authenticate
+    service = authenticate_gsc()
+    if not service:
+        st.stop()
 
-        if site_url:
-            # Date selector
-            date_options = {
-                "1 Month": (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
-                "3 Months": (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d'),
-                "6 Months": (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d'),
-                "12 Months": (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d'),
-                "Custom": None
-            }
-            selected_range = st.selectbox("Select date range:", list(date_options.keys()))
+    site_url = st.text_input("Enter your site URL (e.g., https://example.com):")
 
-            if selected_range == "Custom":
-                start_date = st.date_input("Start date:")
-                end_date = st.date_input("End date:")
-            else:
-                start_date = date_options[selected_range]
-                end_date = datetime.now().strftime('%Y-%m-%d')
+    if site_url:
+        # Date selector
+        date_options = {
+            "1 Month": (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
+            "3 Months": (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d'),
+            "6 Months": (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d'),
+            "12 Months": (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d'),
+            "Custom": None
+        }
+        selected_range = st.selectbox("Select date range:", list(date_options.keys()))
 
-            # Fetch data
-            if st.button("Fetch Data"):
-                data = fetch_gsc_data(service, site_url, start_date, end_date)
-                st.write("Search Console Data:")
-                st.dataframe(data)
+        if selected_range == "Custom":
+            start_date = st.date_input("Start date:").strftime('%Y-%m-%d')
+            end_date = st.date_input("End date:").strftime('%Y-%m-%d')
+        else:
+            start_date = date_options[selected_range]
+            end_date = datetime.now().strftime('%Y-%m-%d')
 
-                # Add filters for queries and landing pages
-                queries = data['query'].unique()
-                selected_queries = st.multiselect("Filter by queries:", queries)
-                if selected_queries:
-                    data = data[data['query'].isin(selected_queries)]
+        # Fetch data
+        if st.button("Fetch Data"):
+            data = fetch_gsc_data(service, site_url, start_date, end_date)
+            st.write("Search Console Data:")
+            st.dataframe(data)
 
-                pages = data['page'].unique()
-                selected_pages = st.multiselect("Filter by landing pages:", pages)
-                if selected_pages:
-                    data = data[data['page'].isin(selected_pages)]
+            # Add filters for queries and landing pages
+            queries = data['query'].unique()
+            selected_queries = st.multiselect("Filter by queries:", queries)
+            if selected_queries:
+                data = data[data['query'].isin(selected_queries)]
 
-                st.write("Filtered Data:")
-                st.dataframe(data)
+            pages = data['page'].unique()
+            selected_pages = st.multiselect("Filter by landing pages:", pages)
+            if selected_pages:
+                data = data[data['page'].isin(selected_pages)]
 
-                # Data comparison (optional)
-                st.write("Compare with another date range:")
-                compare_start_date = st.date_input("Compare start date:")
-                compare_end_date = st.date_input("Compare end date:")
-                if st.button("Compare"):
-                    compare_data = fetch_gsc_data(service, site_url, compare_start_date, compare_end_date)
-                    st.write("Comparison Data:")
-                    st.dataframe(compare_data)
+            st.write("Filtered Data:")
+            st.dataframe(data)
+
+            # Data comparison (optional)
+            st.write("Compare with another date range:")
+            compare_start_date = st.date_input("Compare start date:").strftime('%Y-%m-%d')
+            compare_end_date = st.date_input("Compare end date:").strftime('%Y-%m-%d')
+            if st.button("Compare"):
+                compare_data = fetch_gsc_data(service, site_url, compare_start_date, compare_end_date)
+                st.write("Comparison Data:")
+                st.dataframe(compare_data)
 
 if __name__ == "__main__":
     main()
