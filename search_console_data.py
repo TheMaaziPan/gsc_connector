@@ -55,7 +55,7 @@ def main():
     if not service:
         st.stop()
 
-    site_url = st.text_input("Enter your site URL (e.g., http://instantoftices.com):")
+    site_url = st.text_input("Enter your site URL (e.g., https://www.instantoffices.com/):")
 
     if site_url:
         # Date selector
