@@ -4,4 +4,5 @@ google-auth-oauthlib==1.0.0
 google-auth-httplib2==0.1.0
 google-api-python-client==2.86.0
 pandas==2.0.3
-numpy>=1.25.0  # Use a newer version that does not rely on `distutils`
+numpy>=1.25.0
+pillow>=10.0.0
