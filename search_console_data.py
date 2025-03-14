@@ -1,26 +1,18 @@
 import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 import pandas as pd
 from datetime import datetime, timedelta
 import json
 
-# Authenticate using Streamlit secrets or file upload
+# Authenticate using Streamlit secrets
 def authenticate_gsc():
-    # Option 1: Use secrets
-    if 'gcp_credentials' in st.secrets:
-        credentials_json = json.loads(st.secrets['gcp_credentials']['gcp_credentials_json'])
-        st.info("Using credentials from Streamlit secrets.")
-    else:
-        # Option 2: File upload
-        uploaded_file = st.file_uploader("Upload Google Cloud Credentials JSON", type="json")
-        if uploaded_file is not None:
-            credentials_json = json.load(uploaded_file)
-            st.success("Credentials file uploaded successfully.")
-        else:
-            st.warning("Please upload your Google Cloud credentials JSON file or configure secrets.")
-            return None
+    if 'gcp_credentials' not in st.secrets:
+        st.error("Google Cloud credentials not found in secrets. Please add them to secrets.toml.")
+        return None
 
+    credentials_json = json.loads(st.secrets['gcp_credentials']['gcp_credentials_json'])
     credentials = service_account.Credentials.from_service_account_info(
         credentials_json, scopes=['https://www.googleapis.com/auth/webmasters.readonly']
     )
@@ -35,19 +27,24 @@ def fetch_gsc_data(service, site_url, start_date, end_date, dimensions=['query',
         'dimensions': dimensions,
         'rowLimit': 1000
     }
-    response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
-    rows = response.get('rows', [])
-    data = []
-    for row in rows:
-        data.append({
-            'query': row['keys'][0],
-            'page': row['keys'][1],
-            'clicks': row['clicks'],
-            'impressions': row['impressions'],
-            'ctr': row['ctr'],
-            'position': row['position']
-        })
-    return pd.DataFrame(data)
+    try:
+        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
+        rows = response.get('rows', [])
+        data = []
+        for row in rows:
+            data.append({
+                'query': row['keys'][0],
+                'page': row['keys'][1],
+                'clicks': row['clicks'],
+                'impressions': row['impressions'],
+                'ctr': row['ctr'],
+                'position': row['position']
+            })
+        return pd.DataFrame(data)
+    except HttpError as e:
+        st.error(f"An HTTP error occurred: {e}")
+        st.error(f"Details: {e.content.decode('utf-8')}")  # Display detailed error message
+        return pd.DataFrame()  # Return an empty DataFrame on error
 
 # Streamlit app
 def main():
@@ -58,7 +55,7 @@ def main():
     if not service:
         st.stop()
 
-    site_url = st.text_input("Enter your site URL (e.g., https://example.com):")
+    site_url = st.text_input("Enter your site URL (e.g., http://instantoftices.com):")
 
     if site_url:
         # Date selector
@@ -81,22 +78,23 @@ def main():
         # Fetch data
         if st.button("Fetch Data"):
             data = fetch_gsc_data(service, site_url, start_date, end_date)
-            st.write("Search Console Data:")
-            st.dataframe(data)
+            if not data.empty:
+                st.write("Search Console Data:")
+                st.dataframe(data)
 
-            # Add filters for queries and landing pages
-            queries = data['query'].unique()
-            selected_queries = st.multiselect("Filter by queries:", queries)
-            if selected_queries:
-                data = data[data['query'].isin(selected_queries)]
+                # Add filters for queries and landing pages
+                queries = data['query'].unique()
+                selected_queries = st.multiselect("Filter by queries:", queries)
+                if selected_queries:
+                    data = data[data['query'].isin(selected_queries)]
 
-            pages = data['page'].unique()
-            selected_pages = st.multiselect("Filter by landing pages:", pages)
-            if selected_pages:
-                data = data[data['page'].isin(selected_pages)]
+                pages = data['page'].unique()
+                selected_pages = st.multiselect("Filter by landing pages:", pages)
+                if selected_pages:
+                    data = data[data['page'].isin(selected_pages)]
 
-            st.write("Filtered Data:")
-            st.dataframe(data)
+                st.write("Filtered Data:")
+                st.dataframe(data)
 
             # Data comparison (optional)
             st.write("Compare with another date range:")
@@ -104,8 +102,9 @@ def main():
             compare_end_date = st.date_input("Compare end date:").strftime('%Y-%m-%d')
             if st.button("Compare"):
                 compare_data = fetch_gsc_data(service, site_url, compare_start_date, compare_end_date)
-                st.write("Comparison Data:")
-                st.dataframe(compare_data)
+                if not compare_data.empty:
+                    st.write("Comparison Data:")
+                    st.dataframe(compare_data)
 
 if __name__ == "__main__":
     main()
