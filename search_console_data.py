@@ -1,110 +1,214 @@
+# Standard library imports
+import datetime
+import base64
+
+# Related third-party imports
 import streamlit as st
-from google.oauth2 import service_account
+from google_auth_oauthlib.flow import Flow
+from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 import pandas as pd
-from datetime import datetime, timedelta
-import json
+import searchconsole
 
-# Authenticate using Streamlit secrets
-def authenticate_gsc():
-    if 'gcp_credentials' not in st.secrets:
-        st.error("Google Cloud credentials not found in secrets. Please add them to secrets.toml.")
-        return None
+# Configuration: Set to True if running locally, False if running on Streamlit Cloud
+IS_LOCAL = False
 
-    credentials_json = json.loads(st.secrets['gcp_credentials']['gcp_credentials_json'])
-    credentials = service_account.Credentials.from_service_account_info(
-        credentials_json, scopes=['https://www.googleapis.com/auth/webmasters.readonly']
+# Constants
+SEARCH_TYPES = ["web", "image", "video", "news", "discover", "googleNews"]
+DATE_RANGE_OPTIONS = [
+    "Last 7 Days", "Last 30 Days", "Last 3 Months", "Last 6 Months",
+    "Last 12 Months", "Last 16 Months", "Custom Range"
+]
+DEVICE_OPTIONS = ["All Devices", "desktop", "mobile", "tablet"]
+BASE_DIMENSIONS = ["page", "query", "country", "date"]
+MAX_ROWS = 1_000_000
+DF_PREVIEW_ROWS = 100
+
+
+# -------------
+# Streamlit App Configuration
+# -------------
+
+def setup_streamlit():
+    """ Configures Streamlit UI settings and layout. """
+    st.set_page_config(page_title="✨ Simple Google Search Console Data", layout="wide")
+    st.title("✨ Simple Google Search Console Data Extractor")
+    st.markdown(f"### Lightweight GSC Data Extractor (Max {MAX_ROWS:,} Rows)")
+
+    st.markdown(
+        """
+        <p>
+            Created by <a href="https://twitter.com/LeeFootSEO" target="_blank">LeeFootSEO</a> |
+            <a href="https://leefoot.co.uk" target="_blank">More Apps & Scripts on my Website</a>
+        </p>
+        """,
+        unsafe_allow_html=True
     )
-    service = build('searchconsole', 'v1', credentials=credentials)
-    return service
+    st.divider()
 
-# Fetch data from GSC
-def fetch_gsc_data(service, site_url, start_date, end_date, dimensions=['query', 'page']):
-    request = {
-        'startDate': start_date,
-        'endDate': end_date,
-        'dimensions': dimensions,
-        'rowLimit': 1000
+
+def init_session_state():
+    """ Initializes session state variables if not already set. """
+    defaults = {
+        "selected_property": None,
+        "selected_search_type": "web",
+        "selected_date_range": "Last 7 Days",
+        "start_date": datetime.date.today() - datetime.timedelta(days=7),
+        "end_date": datetime.date.today(),
+        "selected_dimensions": ["page", "query"],
+        "selected_device": "All Devices",
+        "custom_start_date": datetime.date.today() - datetime.timedelta(days=7),
+        "custom_end_date": datetime.date.today(),
+        "credentials": None
     }
-    try:
-        response = service.searchanalytics().query(siteUrl=site_url, body=request).execute()
-        rows = response.get('rows', [])
-        data = []
-        for row in rows:
-            data.append({
-                'query': row['keys'][0],
-                'page': row['keys'][1],
-                'clicks': row['clicks'],
-                'impressions': row['impressions'],
-                'ctr': row['ctr'],
-                'position': row['position']
-            })
-        return pd.DataFrame(data)
-    except HttpError as e:
-        st.error(f"An HTTP error occurred: {e}")
-        st.error(f"Details: {e.content.decode('utf-8')}")  # Display detailed error message
-        return pd.DataFrame()  # Return an empty DataFrame on error
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-# Streamlit app
-def main():
-    st.title("Google Search Console Data Extractor")
 
-    # Authenticate
-    service = authenticate_gsc()
-    if not service:
-        st.stop()
+# -------------
+# Google Authentication Functions
+# -------------
 
-    site_url = st.text_input("Enter your site URL (e.g., https://www.instantoffices.com/):")
-
-    if site_url:
-        # Date selector
-        date_options = {
-            "1 Month": (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'),
-            "3 Months": (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d'),
-            "6 Months": (datetime.now() - timedelta(days=180)).strftime('%Y-%m-%d'),
-            "12 Months": (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d'),
-            "Custom": None
+def load_config():
+    """ Loads the Google API client configuration from Streamlit secrets. """
+    return {
+        "installed": {
+            "client_id": str(st.secrets["installed"]["client_id"]),
+            "client_secret": str(st.secrets["installed"]["client_secret"]),
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://accounts.google.com/o/oauth2/token",
+            "redirect_uris": ["http://localhost:8501"] if IS_LOCAL else [str(st.secrets["installed"]["redirect_uris"][0])]
         }
-        selected_range = st.selectbox("Select date range:", list(date_options.keys()))
+    }
 
-        if selected_range == "Custom":
-            start_date = st.date_input("Start date:").strftime('%Y-%m-%d')
-            end_date = st.date_input("End date:").strftime('%Y-%m-%d')
+
+def init_oauth_flow(client_config):
+    """ Initializes the OAuth flow for Google authentication. """
+    scopes = ["https://www.googleapis.com/auth/webmasters"]
+    return Flow.from_client_config(
+        client_config,
+        scopes=scopes,
+        redirect_uri=client_config["installed"]["redirect_uris"][0],
+    )
+
+
+def google_auth(client_config):
+    """ Starts Google OAuth authentication flow and returns the authorization URL. """
+    flow = init_oauth_flow(client_config)
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    return flow, auth_url
+
+
+def refresh_credentials():
+    """ Refreshes expired credentials if needed. """
+    if "credentials" in st.session_state and st.session_state.credentials.expired:
+        st.session_state.credentials.refresh(Request())
+
+
+# -------------
+# Data Fetching Functions
+# -------------
+
+def list_gsc_properties(credentials):
+    """ Lists all GSC properties for the authenticated user. """
+    try:
+        service = build('webmasters', 'v3', credentials=credentials)
+        site_list = service.sites().list().execute()
+        return [site['siteUrl'] for site in site_list.get('siteEntry', [])] or ["No properties found"]
+    except Exception as e:
+        st.error(f"Failed to retrieve properties: {str(e)}")
+        return []
+
+
+def fetch_gsc_data(webproperty, search_type, start_date, end_date, dimensions, device_type=None):
+    """ Fetches GSC data and handles errors. """
+    query = webproperty.query.range(start_date, end_date).search_type(search_type).dimension(*dimensions)
+
+    if 'device' in dimensions and device_type and device_type != 'All Devices':
+        query = query.filter('device', 'equals', device_type.lower())
+
+    try:
+        return query.limit(MAX_ROWS).get().to_dataframe()
+    except Exception as e:
+        st.error(f"Error fetching GSC data: {str(e)}")
+        return pd.DataFrame()
+
+
+# -------------
+# Utility Functions
+# -------------
+
+def calc_date_range(selection, custom_start=None, custom_end=None):
+    """ Returns the start and end date based on the selection. """
+    range_map = {
+        'Last 7 Days': 7, 'Last 30 Days': 30, 'Last 3 Months': 90,
+        'Last 6 Months': 180, 'Last 12 Months': 365, 'Last 16 Months': 480
+    }
+    today = datetime.date.today()
+    
+    if selection == 'Custom Range':
+        if custom_start and custom_end and custom_start <= custom_end:
+            return custom_start, custom_end
         else:
-            start_date = date_options[selected_range]
-            end_date = datetime.now().strftime('%Y-%m-%d')
+            st.error("Invalid custom date range. Ensure start date is before the end date.")
+            return today - datetime.timedelta(days=7), today
 
-        # Fetch data
-        if st.button("Fetch Data"):
-            data = fetch_gsc_data(service, site_url, start_date, end_date)
-            if not data.empty:
-                st.write("Search Console Data:")
-                st.dataframe(data)
+    return today - datetime.timedelta(days=range_map.get(selection, 7)), today
 
-                # Add filters for queries and landing pages
-                queries = data['query'].unique()
-                selected_queries = st.multiselect("Filter by queries:", queries)
-                if selected_queries:
-                    data = data[data['query'].isin(selected_queries)]
 
-                pages = data['page'].unique()
-                selected_pages = st.multiselect("Filter by landing pages:", pages)
-                if selected_pages:
-                    data = data[data['page'].isin(selected_pages)]
+# -------------
+# UI Components
+# -------------
 
-                st.write("Filtered Data:")
-                st.dataframe(data)
+def show_google_sign_in(auth_url):
+    """ Displays the Google Sign-in button. """
+    with st.sidebar:
+        if st.button("Sign in with Google"):
+            st.write('Please click the link below to authenticate:')
+            st.markdown(f'[Google Sign-In]({auth_url})', unsafe_allow_html=True)
 
-            # Data comparison (optional)
-            st.write("Compare with another date range:")
-            compare_start_date = st.date_input("Compare start date:").strftime('%Y-%m-%d')
-            compare_end_date = st.date_input("Compare end date:").strftime('%Y-%m-%d')
-            if st.button("Compare"):
-                compare_data = fetch_gsc_data(service, site_url, compare_start_date, compare_end_date)
-                if not compare_data.empty:
-                    st.write("Comparison Data:")
-                    st.dataframe(compare_data)
+
+def show_fetch_data_button(webproperty, search_type, start_date, end_date, selected_dimensions):
+    """ Displays the 'Fetch Data' button and handles data retrieval. """
+    if st.button("Fetch Data"):
+        report = fetch_gsc_data(webproperty, search_type, start_date, end_date, selected_dimensions)
+        if not report.empty:
+            st.dataframe(report.head(DF_PREVIEW_ROWS))
+            csv = report.to_csv(index=False, encoding='utf-8-sig')
+            b64_csv = base64.b64encode(csv.encode()).decode()
+            href = f'<a href="data:file/csv;base64,{b64_csv}" download="search_console_data.csv">Download CSV</a>'
+            st.markdown(href, unsafe_allow_html=True)
+
+
+# -------------
+# Main Streamlit App Function
+# -------------
+
+def main():
+    """ The main function for the Streamlit app. """
+    setup_streamlit()
+    init_session_state()
+    
+    client_config = load_config()
+    st.session_state.auth_flow, st.session_state.auth_url = google_auth(client_config)
+
+    query_params = st.query_params
+    auth_code = query_params.get("code", [None])[0]
+
+    if auth_code and not st.session_state.get('credentials'):
+        st.session_state.auth_flow.fetch_token(code=auth_code)
+        st.session_state.credentials = st.session_state.auth_flow.credentials
+
+    if not st.session_state.get('credentials'):
+        show_google_sign_in(st.session_state.auth_url)
+    else:
+        refresh_credentials()
+        properties = list_gsc_properties(st.session_state.credentials)
+        if properties:
+            webproperty = properties[0]  # Default to first property
+            show_fetch_data_button(webproperty, "web", datetime.date.today() - datetime.timedelta(days=7), datetime.date.today(), ["page", "query"])
+
 
 if __name__ == "__main__":
     main()
