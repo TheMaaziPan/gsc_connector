@@ -8,24 +8,15 @@ from googleapiclient.discovery import build
 import pandas as pd
 import searchconsole
 
-# Configuration: Set to True if running locally, False if running on Streamlit Cloud
-IS_LOCAL = False
-
-# Constants
-SEARCH_TYPES = ["web", "image", "video", "news", "discover", "googleNews"]
-DATE_RANGE_OPTIONS = ["Last 7 Days", "Last 30 Days", "Last 3 Months", "Last 6 Months",
-                      "Last 12 Months", "Last 16 Months", "Custom Range"]
-DEVICE_OPTIONS = ["All Devices", "desktop", "mobile", "tablet"]
-BASE_DIMENSIONS = ["page", "query", "country", "date"]
-MAX_ROWS = 1_000_000
-DF_PREVIEW_ROWS = 100
-
+# -------------
+# Streamlit App Configuration
+# -------------
 
 def setup_streamlit():
     """Configures Streamlit UI settings and layout."""
     st.set_page_config(page_title="✨ Google Search Console Connector", layout="wide")
     st.title("✨ Google Search Console Data Extractor")
-    st.markdown(f"### Extract Google Search Console Data (Max {MAX_ROWS:,} Rows)")
+    st.markdown(f"### Extract Google Search Console Data")
 
     st.markdown(
         """
@@ -117,11 +108,15 @@ def fetch_gsc_data(webproperty, search_type, start_date, end_date, dimensions, d
         query = query.filter('device', 'equals', device_type.lower())
 
     try:
-        return query.limit(MAX_ROWS).get().to_dataframe()
+        return query.limit(1000000).get().to_dataframe()
     except Exception as e:
         st.error(f"Error fetching GSC data: {str(e)}")
         return pd.DataFrame()
 
+
+# -------------
+# Main Streamlit App Function
+# -------------
 
 def main():
     """Main function for Streamlit app."""
@@ -133,27 +128,33 @@ def main():
         return
 
     # Initialize OAuth
-    st.session_state.auth_flow, st.session_state.auth_url = google_auth(client_config)
+    if "auth_flow" not in st.session_state or "auth_url" not in st.session_state:
+        st.session_state.auth_flow, st.session_state.auth_url = google_auth(client_config)
 
     query_params = st.query_params
     auth_code = query_params.get("code", [None])[0]
 
-    if auth_code and not st.session_state.get('credentials'):
+    if auth_code and not st.session_state.get("credentials"):
         try:
             st.session_state.auth_flow.fetch_token(code=auth_code)
             st.session_state.credentials = st.session_state.auth_flow.credentials
+            st.experimental_rerun()  # Refresh UI after login
         except Exception as e:
-            st.error(f"Authentication failed. Please sign in again. Error: {str(e)}")
+            st.error(f"Authentication failed: {e}")
+            st.write("Debugging Response:")
+            st.json(st.session_state.auth_flow.credentials.__dict__)
             st.session_state.credentials = None
             st.session_state.auth_flow, st.session_state.auth_url = google_auth(client_config)
 
-    if not st.session_state.get('credentials'):
+    if not st.session_state.get("credentials"):
         with st.sidebar:
             if st.button("Sign in with Google"):
-                st.write('Click the link below to authenticate:')
+                st.write("Click the link below to authenticate:")
                 st.markdown(f'[Google Sign-In]({st.session_state.auth_url})', unsafe_allow_html=True)
     else:
-        # Fetch Search Console properties
+        st.write("✅ Authentication successful!")
+
+        # Fetch GSC properties
         refresh_credentials()
         credentials = st.session_state.credentials
         service = build('webmasters', 'v3', credentials=credentials)
@@ -171,7 +172,7 @@ def main():
                 report = fetch_gsc_data(service, "web", datetime.date.today() - datetime.timedelta(days=7), datetime.date.today(), ["page", "query"])
                 
                 if not report.empty:
-                    st.dataframe(report.head(DF_PREVIEW_ROWS))
+                    st.dataframe(report.head(100))
                     csv = report.to_csv(index=False, encoding='utf-8-sig')
                     b64_csv = base64.b64encode(csv.encode()).decode()
                     href = f'<a href="data:file/csv;base64,{b64_csv}" download="search_console_data.csv">Download CSV</a>'
