@@ -20,8 +20,6 @@ def setup_streamlit():
 
     st.markdown(
         """
-        <p>Created by <a href="https://twitter.com/LeeFootSEO" target="_blank">LeeFootSEO</a> |
-        <a href="https://leefoot.co.uk" target="_blank">More Apps & Scripts</a></p>
         """,
         unsafe_allow_html=True
     )
